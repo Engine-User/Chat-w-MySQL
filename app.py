@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 import streamlit as st
 import os
 from urllib.parse import quote_plus
+from langchain_groq import ChatGroq
 
 def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
     # Properly encode the password
@@ -40,7 +41,7 @@ def get_sql_chain(db):
     
     prompt = ChatPromptTemplate.from_template(template)
     
-    llm = ChatOpenAI(model="gpt-4-0125-preview")
+    llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
     
     def get_schema(_):
         return db.get_table_info()
@@ -67,7 +68,7 @@ def get_response(user_query: str, db: SQLDatabase, chat_history: list):
     
     prompt = ChatPromptTemplate.from_template(template)
     
-    llm = ChatOpenAI(model="gpt-4-0125-preview")
+    llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
     
     chain = (
         RunnablePassthrough.assign(query=sql_chain).assign(
