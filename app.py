@@ -4,35 +4,19 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_community.utilities import SQLDatabase
 from langchain_core.output_parsers import StrOutputParser
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 import streamlit as st
 import os
 from urllib.parse import quote_plus
+from langchain_groq import ChatGroq
 
-# Load environment variables
-load_dotenv()
+def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
+    # Properly encode the password
+    encoded_password = quote_plus(password)
+    db_uri = f"mysql+mysqlconnector://{user}:{encoded_password}@{host}:{port}/{database}"
+    return SQLDatabase.from_uri(db_uri)
 
-def get_mock_database():
-    # This function returns a mock database schema
-    return """
-    CREATE TABLE customers (
-        id INT PRIMARY KEY,
-        name VARCHAR(100),
-        email VARCHAR(100),
-        created_at TIMESTAMP
-    );
-
-    CREATE TABLE orders (
-        id INT PRIMARY KEY,
-        customer_id INT,
-        product_name VARCHAR(100),
-        quantity INT,
-        order_date TIMESTAMP,
-        FOREIGN KEY (customer_id) REFERENCES customers(id)
-    );
-    """
-
-def get_sql_chain():
+def get_sql_chain(db):
     template = """
     You are a data analyst at a company. You are interacting with a user who is asking you questions about the company's database.
     Based on the table schema below, write a SQL query that would answer the user's question. Take the conversation history into account.
@@ -47,7 +31,7 @@ def get_sql_chain():
     Question: Which 3 items have been ordered the most?
     SQL Query: SELECT product_name, SUM(quantity) as total_ordered FROM orders GROUP BY product_name ORDER BY total_ordered DESC LIMIT 3;
     Question: List 10 customer names
-    SQL Query: SELECT name FROM customers LIMIT 10;
+    SQL Query: SELECT customer_name FROM customers LIMIT 10;
     
     Your turn:
     
@@ -60,7 +44,7 @@ def get_sql_chain():
     llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
     
     def get_schema(_):
-        return get_mock_database()
+        return db.get_table_info()
     
     return (
         RunnablePassthrough.assign(schema=get_schema)
@@ -69,20 +53,18 @@ def get_sql_chain():
         | StrOutputParser()
     )
     
-def get_response(user_query: str, chat_history: list):
-    sql_chain = get_sql_chain()
+def get_response(user_query: str, db: SQLDatabase, chat_history: list):
+    sql_chain = get_sql_chain(db)
     
     template = """
-    You are a data analyst at a company. You are interacting with a user who is asking questions about the company's database.
-    Based on the table schema below, question, and SQL query, write a natural language response explaining the query and what it would do if executed.
+    You are a data analyst at a company. You are interacting with a user who is asking you questions about the company's database.
+    Based on the table schema below, question, sql query, and sql response, write a natural language response as well as a SQL command/query for the user to run(if applicable).
     <SCHEMA>{schema}</SCHEMA>
 
     Conversation History: {chat_history}
     SQL Query: <SQL>{query}</SQL>
     User question: {question}
-
-    Provide a detailed explanation of the SQL query and how it addresses the user's question. Also, mention that this is a demonstration and the query is not actually being executed on a real database.
-    """
+    SQL Response: {response}"""
     
     prompt = ChatPromptTemplate.from_template(template)
     
@@ -90,7 +72,8 @@ def get_response(user_query: str, chat_history: list):
     
     chain = (
         RunnablePassthrough.assign(query=sql_chain).assign(
-            schema=lambda _: get_mock_database(),
+            schema=lambda _: db.get_table_info(),
+            response=lambda vars: db.run(vars["query"]),
         )
         | prompt
         | llm
@@ -104,13 +87,15 @@ def get_response(user_query: str, chat_history: list):
     
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        AIMessage(content="Hello! This is an SQL assistant for a mock database. Ask anything about the data, and I'll generate SQL queries and explain them."),
+        AIMessage(content="Hello! This is an SQL assistant for your database. Connect your Database and ask anything about the data."),
     ]
 
-# Set dark theme
-st.set_page_config(page_title="Chat with Mock SQL Database", page_icon=":bar_chart:", layout="wide", initial_sidebar_state="expanded")
+load_dotenv()
 
-# Custom CSS for styling (unchanged)
+# Set dark theme
+st.set_page_config(page_title="Chat with MySQL Database", page_icon=":bar_chart:", layout="wide", initial_sidebar_state="expanded")
+
+# Custom CSS for styling
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Graduate&display=swap');
@@ -136,14 +121,17 @@ st.markdown("""
         font-family: 'Graduate', sans-serif !important;
     }
 
+    /* Apply Graduate font to all elements */
     * {
         font-family: 'Graduate', sans-serif !important;
     }
 
+    /* Ensure that code blocks and pre-formatted text use a monospace font */
     pre, code {
         font-family: monospace !important;
     }
 
+    /* Custom styles for the header */
     .header-container {
         display: flex;
         flex-direction: column;
@@ -180,17 +168,39 @@ st.markdown("""
 st.markdown("""
 <div class="header-container">
     <div class="header-line"></div>
-    <h1 class="header-title">Chat with Mock SQL Database</h1>
+    <h1 class="header-title">Chat with MySQL Database</h1>
     <div class="header-line"></div>
 </div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
+    # About button moved to the top
     if st.button("About"):
-        st.markdown("This app demonstrates how to chat with a mock SQL database using natural language. It generates SQL queries based on your questions but doesn't execute them. Made by <span style='color: red;'>Engineer</span>.", unsafe_allow_html=True)
+        st.markdown("This app allows you to chat with your MySQL database using natural language. Made by <span style='color: red;'>Engineer</span>.", unsafe_allow_html=True)
 
-    st.subheader("Mock Database Schema")
-    st.code(get_mock_database(), language="sql")
+    st.subheader("Database Connection Settings")
+    st.write("Connect to your MySQL database and start chatting.")
+    
+    st.text_input("Host", value="localhost", key="Host")
+    st.text_input("Port", value="3306", key="Port")
+    st.text_input("User", value="root", key="User")
+    st.text_input("Password", type="password", key="Password")
+    st.text_input("Database", key="Database")
+    
+    if st.button("Connect"):
+        with st.spinner("Connecting to database..."):
+            try:
+                db = init_database(
+                    st.session_state["User"],
+                    st.session_state["Password"],
+                    st.session_state["Host"],
+                    st.session_state["Port"],
+                    st.session_state["Database"]
+                )
+                st.session_state.db = db
+                st.success("Connected to database!")
+            except Exception as e:
+                st.error(f"Failed to connect to the database: {str(e)}")
 
 for message in st.session_state.chat_history:
     if isinstance(message, AIMessage):
@@ -200,7 +210,7 @@ for message in st.session_state.chat_history:
         with st.chat_message("Human"):
             st.markdown(message.content)
 
-user_query = st.chat_input("Ask about the mock database...")
+user_query = st.chat_input("Ask about your database...")
 if user_query is not None and user_query.strip() != "":
     st.session_state.chat_history.append(HumanMessage(content=user_query))
     
@@ -208,10 +218,13 @@ if user_query is not None and user_query.strip() != "":
         st.markdown(user_query)
         
     with st.chat_message("AI"):
-        with st.spinner("Thinking..."):
-            try:
-                response = get_response(user_query, st.session_state.chat_history)
-                st.markdown(response)
-                st.session_state.chat_history.append(AIMessage(content=response))
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+        if "db" not in st.session_state:
+            st.error("Please connect to the database first.")
+        else:
+            with st.spinner("Thinking..."):
+                try:
+                    response = get_response(user_query, st.session_state.db, st.session_state.chat_history)
+                    st.markdown(response)
+                    st.session_state.chat_history.append(AIMessage(content=response))
+                except Exception as e:
+                    st.error(f"An error occurred: {str(e)}")
